@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"hyprwall-dl/system"
@@ -9,7 +8,6 @@ import (
 	"hyprwall-dl/wallpaper"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -184,35 +182,10 @@ func main() {
 	// 8. TUI Selector Mode
 	var downloadList []wallpaper.ImageData
 	if selectMode {
-		fmt.Println("\n==============================================================")
-		fmt.Println("                  WALLHAVEN INTERACTIVE SELECTOR              ")
-		fmt.Println("==============================================================")
-		for i, res := range results {
-			fmt.Printf("[%d] ID: %s | Resolution: %s | Aspect Ratio: %s\n", i+1, res.ID, res.Resolution, res.Ratio)
-		}
-		fmt.Println("==============================================================")
-		fmt.Printf("Enter selection numbers separated by commas (e.g. 1,3 or just 2)\n")
-		fmt.Printf("Press Enter to download the first result by default.\n\nSelection > ")
-
-		reader := bufio.NewReader(os.Stdin)
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-
-		if input == "" {
-			downloadList = append(downloadList, results[0])
-		} else {
-			parts := strings.Split(input, ",")
-			for _, part := range parts {
-				idx, convErr := strconv.Atoi(strings.TrimSpace(part))
-				if convErr == nil && idx >= 1 && idx <= len(results) {
-					downloadList = append(downloadList, results[idx-1])
-				}
-			}
-		}
-
+		downloadList = system.RunTUI(results, *countFlag)
 		if len(downloadList) == 0 {
-			fmt.Println("No valid selections made. Defaulting to first result.")
-			downloadList = append(downloadList, results[0])
+			fmt.Println("No selections made or cancelled. Exiting.")
+			os.Exit(0)
 		}
 	} else {
 		// Standard automatic download

@@ -14,11 +14,17 @@ type WallhavenResponse struct {
 	Meta MetaData    `json:"meta"`
 }
 
+type ThumbsData struct {
+	Large string `json:"large"`
+	Small string `json:"small"`
+}
+
 type ImageData struct {
-	ID         string `json:"id"`
-	Path       string `json:"path"`
-	Resolution string `json:"resolution"`
-	Ratio      string `json:"ratio"`
+	ID         string     `json:"id"`
+	Path       string     `json:"path"`
+	Resolution string     `json:"resolution"`
+	Ratio      string     `json:"ratio"`
+	Thumbs     ThumbsData `json:"thumbs"`
 }
 
 type MetaData struct {
