@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type ImageData struct {
 	Resolution string     `json:"resolution"`
 	Ratio      string     `json:"ratio"`
 	Thumbs     ThumbsData `json:"thumbs"`
+	Source     string     `json:"source"`
 }
 
 type MetaData struct {
@@ -36,13 +38,33 @@ type MetaData struct {
 // SearchWallpapers searches Wallhaven for wallpapers matching the theme, resolution, colors, categories, and purity.
 func SearchWallpapers(query string, color string, categories string, purity string, width, height int, count int) ([]ImageData, error) {
 	baseURL := "https://wallhaven.cc/api/v1/search"
-	res := fmt.Sprintf("%dx%d", width, height)
 
 	params := url.Values{}
 	if query != "" {
-		params.Add("q", query)
+		// Broaden query tags by replacing hyphens and underscores with spaces
+		broadQuery := strings.ReplaceAll(strings.ReplaceAll(query, "-", " "), "_", " ")
+		params.Add("q", broadQuery)
 	}
-	params.Add("resolutions", res)
+	if width > 0 && height > 0 {
+		res := fmt.Sprintf("%dx%d", width, height)
+		params.Add("atleast", res)
+
+		// Dynamically calculate aspect ratio for the monitor to ensure a perfect fit
+		ratioVal := float64(width) / float64(height)
+		var ratios string
+		if ratioVal > 2.3 { // Ultrawide / Super ultrawide
+			ratios = "21x9,32x9"
+		} else if ratioVal > 1.7 { // Standard widescreen (16:9)
+			ratios = "16x9"
+		} else if ratioVal > 1.5 { // 16:10
+			ratios = "16x10"
+		} else if ratioVal > 1.3 { // 4:3
+			ratios = "4x3"
+		} else {
+			ratios = "5x4"
+		}
+		params.Add("ratios", ratios)
+	}
 
 	if color != "" {
 		params.Add("colors", color)
@@ -55,6 +77,16 @@ func SearchWallpapers(query string, color string, categories string, purity stri
 	}
 
 	params.Add("sorting", "random") // Get random results matching our criteria
+
+	// Wallhaven API requires a random seed parameter for sorting=random to ensure
+	// that subsequent queries yield a new, distinct set of random wallpapers.
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	seedRng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	seed := make([]byte, 6)
+	for i := range seed {
+		seed[i] = chars[seedRng.Intn(len(chars))]
+	}
+	params.Add("seed", string(seed))
 
 	fullURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
 
@@ -83,6 +115,10 @@ func SearchWallpapers(query string, color string, categories string, purity stri
 	r.Shuffle(len(wallResp.Data), func(i, j int) {
 		wallResp.Data[i], wallResp.Data[j] = wallResp.Data[j], wallResp.Data[i]
 	})
+
+	for i := range wallResp.Data {
+		wallResp.Data[i].Source = "Wallhaven"
+	}
 
 	// Adjust count if we have fewer results than requested
 	if count > len(wallResp.Data) {

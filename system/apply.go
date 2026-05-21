@@ -8,6 +8,27 @@ import (
 	"strconv"
 )
 
+// detectActiveBackend resolves the current active wallpaper backend by checking environment variables and running daemons.
+func detectActiveBackend() string {
+	if env := os.Getenv("WALLPAPER_BACKEND"); env != "" {
+		return env
+	}
+
+	// Check running wallpaper daemons on Wayland/Hyprland
+	daemons := []string{"swww-daemon", "hyprpaper", "mpvpaper"}
+	for _, daemon := range daemons {
+		cmd := exec.Command("pgrep", "-x", daemon)
+		if err := cmd.Run(); err == nil {
+			if daemon == "swww-daemon" {
+				return "swww"
+			}
+			return daemon
+		}
+	}
+
+	return "awww"
+}
+
 // ApplyWallpaper applies the wallpaper using the HyDE wallpaper.sh script (falling back to legacy versions).
 func ApplyWallpaper(imagePath string) error {
 	home, err := os.UserHomeDir()
@@ -15,10 +36,12 @@ func ApplyWallpaper(imagePath string) error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
+	backend := detectActiveBackend()
+
 	// 1. Try modern HyDE wallpaper.sh directly
 	modernScript := filepath.Join(home, ".local/lib/hyde/wallpaper.sh")
 	if _, err := os.Stat(modernScript); err == nil {
-		cmd := exec.Command(modernScript, imagePath, "--backend", "awww", "--global")
+		cmd := exec.Command(modernScript, imagePath, "--backend", backend, "--global")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to run wallpaper.sh: %w", err)
 		}
@@ -27,7 +50,7 @@ func ApplyWallpaper(imagePath string) error {
 
 	// 2. Try modern wallpaper.sh on the global PATH
 	if path, err := exec.LookPath("wallpaper.sh"); err == nil {
-		cmd := exec.Command(path, imagePath, "--backend", "awww", "--global")
+		cmd := exec.Command(path, imagePath, "--backend", backend, "--global")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to run wallpaper.sh in PATH: %w", err)
 		}

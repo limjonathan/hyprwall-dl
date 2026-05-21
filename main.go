@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"hyprwall-dl/system"
 	"hyprwall-dl/theme"
 	"hyprwall-dl/wallpaper"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,9 +19,12 @@ type downloadResult struct {
 	path  string
 	err   error
 	index int
+	id    string
 }
 
 func main() {
+	defer system.CleanTempThumbnails()
+
 	// CLI Flags
 	themeFlag := flag.String("theme", "", "Specify a theme name instead of auto-detecting")
 	applyFlag := flag.Bool("apply", false, "Automatically apply the downloaded wallpaper")
@@ -162,36 +168,41 @@ func main() {
 		fetchCount = 10
 	}
 
-	// 7. Search on Wallhaven
-	fmt.Printf("Searching Wallhaven for matching wallpapers...\n")
-	results, err := wallpaper.SearchWallpapers(query, colorParam, categories, purityVal, width, height, fetchCount)
+	// 7. Search all online sources
+	fmt.Printf("Searching all online sources for matching wallpapers...\n")
+	results, err := wallpaper.SearchAllSources(query, colorParam, categories, purityVal, width, height, fetchCount)
 	if err != nil {
-		// If color matching was enabled, fall back to searching the text query only
-		if colorMatch && colorParam != "" {
-			fmt.Printf("No wallpapers found for combined query '%s' + color #%s.\nFalling back to query-only search...\n", query, colorParam)
-			results, err = wallpaper.SearchWallpapers(query, "", categories, purityVal, width, height, fetchCount)
-		}
-
-		// If it still fails, exit
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error searching wallpapers: %v\n", err)
-			os.Exit(1)
-		}
+		fmt.Fprintf(os.Stderr, "Error searching wallpapers: %v\n", err)
+		os.Exit(1)
 	}
 
 	// 8. TUI Selector Mode
 	var downloadList []wallpaper.ImageData
 	if selectMode {
-		downloadList = system.RunTUI(results, *countFlag)
+		downloadList = system.RunTUI(results, *countFlag, query, colorParam, categories, purityVal, width, height, wallpapersDir)
 		if len(downloadList) == 0 {
 			fmt.Println("No selections made or cancelled. Exiting.")
+			system.CleanTempThumbnails()
 			os.Exit(0)
 		}
 	} else {
-		// Standard automatic download
-		downloadList = results
-		if len(downloadList) > *countFlag {
-			downloadList = downloadList[:*countFlag]
+		// Standard automatic download: skip already downloaded wallpapers
+		var downloadListToRun []wallpaper.ImageData
+		for _, wall := range results {
+			if system.IsDuplicate(wallpapersDir, wall.ID) {
+				fmt.Printf("Wallpaper ID %s is already downloaded, skipping.\n", wall.ID)
+				continue
+			}
+			downloadListToRun = append(downloadListToRun, wall)
+			if len(downloadListToRun) == *countFlag {
+				break
+			}
+		}
+
+		downloadList = downloadListToRun
+		if len(downloadList) == 0 {
+			fmt.Println("All wallpapers are already downloaded. Exiting.")
+			os.Exit(0)
 		}
 	}
 
@@ -202,11 +213,11 @@ func main() {
 
 	for idx, wall := range downloadList {
 		wg.Add(1)
-		go func(i int, imageURL string) {
+		go func(i int, w wallpaper.ImageData) {
 			defer wg.Done()
-			savedPath, downloadErr := wallpaper.DownloadImage(imageURL, wallpapersDir)
-			resultChan <- downloadResult{path: savedPath, err: downloadErr, index: i}
-		}(idx, wall.Path)
+			savedPath, downloadErr := wallpaper.DownloadImage(w, wallpapersDir)
+			resultChan <- downloadResult{path: savedPath, err: downloadErr, index: i, id: w.ID}
+		}(idx, wall)
 	}
 
 	wg.Wait()
@@ -223,6 +234,9 @@ func main() {
 		} else {
 			savedPathsOrdered[res.index] = res.path
 			successCount++
+			
+			// Warm up the HyDE cache natively using the downloaded wallpaper and the ID
+			warmUpHydeCache(res.id, res.path)
 		}
 	}
 
@@ -254,4 +268,74 @@ func main() {
 			}
 		}
 	}
+}
+
+// warmUpHydeCache calculates the SHA1 hash of the downloaded wallpaper and copies any TUI thumbnail preview to ~/.cache/hyde/thumbs/
+func warmUpHydeCache(imageID, savedPath string) {
+	if savedPath == "" {
+		return
+	}
+
+	// 1. Calculate SHA1 hash of the downloaded high-resolution wallpaper
+	f, err := os.Open(savedPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return
+	}
+	f.Close()
+
+	sha1Hash := hex.EncodeToString(h.Sum(nil))
+
+	// 2. Locate temporary preview file (Kitty thumbnail)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	hydeCacheThumbsDir := filepath.Join(home, ".cache/hyde/thumbs")
+
+	// Ensure the thumbs directory exists
+	if _, err := os.Stat(hydeCacheThumbsDir); os.IsNotExist(err) {
+		return
+	}
+
+	srcFile := ""
+	pngFile := filepath.Join("/tmp", fmt.Sprintf("hyprwall_thumb_%s.png", imageID))
+	jpgFile := filepath.Join("/tmp", fmt.Sprintf("hyprwall_thumb_%s.jpg", imageID))
+
+	if _, err := os.Stat(pngFile); err == nil {
+		srcFile = pngFile
+	} else if _, err := os.Stat(jpgFile); err == nil {
+		srcFile = jpgFile
+	} else {
+		return
+	}
+
+	// 3. Copy to ~/.cache/hyde/thumbs/<SHA1>.thmb and ~/.cache/hyde/thumbs/<SHA1>.sqre
+	copyFile := func(src, dest string) error {
+		in, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+
+		out, err := os.Create(dest)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+
+		_, err = io.Copy(out, in)
+		return err
+	}
+
+	thmbDest := filepath.Join(hydeCacheThumbsDir, sha1Hash+".thmb")
+	sqreDest := filepath.Join(hydeCacheThumbsDir, sha1Hash+".sqre")
+
+	_ = copyFile(srcFile, thmbDest)
+	_ = copyFile(srcFile, sqreDest)
 }

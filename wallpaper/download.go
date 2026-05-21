@@ -6,27 +6,34 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// DownloadImage downloads an image from the URL and saves it to the specified directory.
-func DownloadImage(imageURL, destDir string) (string, error) {
+// DownloadImage downloads an image and saves it to the specified directory with a branded name.
+func DownloadImage(wall ImageData, destDir string) (string, error) {
 	// Create destination directory if it doesn't exist
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Extract filename from URL or generate a unique one
-	filename := filepath.Base(imageURL)
-	if filename == "" || filename == "." || filename == "/" {
-		filename = fmt.Sprintf("wallpaper_%d.jpg", time.Now().Unix())
+	// Resolve file extension
+	ext := filepath.Ext(wall.Path)
+	if ext == "" || len(ext) > 5 {
+		ext = ".jpg" // Default fallback
+	}
+	// Clean query parameters if any (e.g. ?width=...)
+	if idx := strings.Index(ext, "?"); idx != -1 {
+		ext = ext[:idx]
 	}
 
+	// Filename matching exact unique ID (includes branded source prefix)
+	filename := fmt.Sprintf("%s%s", wall.ID, ext)
 	destPath := filepath.Join(destDir, filename)
 
 	// Download the file with a 30-second client-side timeout
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(imageURL)
+	resp, err := client.Get(wall.Path)
 	if err != nil {
 		return "", fmt.Errorf("failed to download image: %w", err)
 	}
