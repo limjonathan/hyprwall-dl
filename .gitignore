@@ -1,0 +1,17 @@
+# Compiled binaries
+hyprwall-dl
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, consumed by `go tool cover`
+*.out
+*.prof
+
+# Dependency directories (only needed if vgo is not used)
+# vendor/
