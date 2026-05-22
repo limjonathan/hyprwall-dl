@@ -73,11 +73,11 @@ func FindThemeDir(home, themeName string) (string, error) {
 		}
 	}
 
-	// Try matching with spaces replaced by hyphens or vice versa
-	normalizedTheme := strings.ToLower(strings.ReplaceAll(themeName, "-", " "))
+	// Try matching with spaces replaced by hyphens or vice versa, and accents stripped
+	normalizedTheme := normalizeThemeName(themeName)
 	for _, entry := range entries {
 		if entry.IsDir() {
-			normalizedEntry := strings.ToLower(strings.ReplaceAll(entry.Name(), "-", " "))
+			normalizedEntry := normalizeThemeName(entry.Name())
 			if normalizedEntry == normalizedTheme {
 				return filepath.Join(hydeThemesDir, entry.Name()), nil
 			}
@@ -85,6 +85,26 @@ func FindThemeDir(home, themeName string) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not find HyDE theme directory for: %s", themeName)
+}
+
+func normalizeThemeName(s string) string {
+	s = strings.ToLower(s)
+	s = strings.ReplaceAll(s, "-", " ")
+	s = strings.ReplaceAll(s, "_", " ")
+
+	// Map common diacritics
+	replacements := map[string]string{
+		"é": "e", "è": "e", "ê": "e", "ë": "e",
+		"á": "a", "à": "a", "â": "a", "ä": "a",
+		"ó": "o", "ò": "o", "ô": "o", "ö": "o",
+		"í": "i", "ì": "i", "î": "i", "ï": "i",
+		"ú": "u", "ù": "u", "û": "u", "ü": "u",
+		"ñ": "n", "ç": "c",
+	}
+	for k, v := range replacements {
+		s = strings.ReplaceAll(s, k, v)
+	}
+	return strings.TrimSpace(s)
 }
 
 // GetActiveBorderColor parses the first active border color hex code (6 characters) from theme.conf.

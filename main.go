@@ -25,6 +25,11 @@ type downloadResult struct {
 func main() {
 	defer system.CleanTempThumbnails()
 
+	// Initialize user configurations
+	if _, err := wallpaper.LoadConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to initialize configuration: %v\n", err)
+	}
+
 	// CLI Flags
 	themeFlag := flag.String("theme", "", "Specify a theme name instead of auto-detecting")
 	applyFlag := flag.Bool("apply", false, "Automatically apply the downloaded wallpaper")

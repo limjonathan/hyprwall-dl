@@ -60,6 +60,11 @@ func HexToColorName(hexStr string) string {
 
 // SearchAllSources queries all seven online wallpaper backends concurrently with a 3-tiered fallback strategy.
 func SearchAllSources(query string, colorHex string, categories string, purity string, width, height int, count int) ([]ImageData, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		cfg = GetDefaultConfig()
+	}
+
 	colorName := ""
 	if colorHex != "" {
 		colorName = HexToColorName(colorHex)
@@ -86,90 +91,117 @@ func SearchAllSources(query string, colorHex string, categories string, purity s
 	}
 
 	// Source 1: Wallhaven (with 3-tiered color-aesthetic fallback matching)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		res, err := SearchWallpapers(query, colorHex, categories, purity, width, height, fetchPerSource)
-		if err != nil || len(res) == 0 {
-			// Tier 2: Try color alone
-			if colorHex != "" {
-				res, err = SearchWallpapers("", colorHex, categories, purity, width, height, fetchPerSource)
+	if cfg.Sources.Wallhaven.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := SearchWallpapers(query, colorHex, categories, purity, width, height, fetchPerSource)
+			if err != nil || len(res) == 0 {
+				// Tier 2: Try color alone
+				if colorHex != "" {
+					res, err = SearchWallpapers("", colorHex, categories, purity, width, height, fetchPerSource)
+				}
+				// Tier 3: Try query alone
+				if (err != nil || len(res) == 0) && query != "" {
+					res, _ = SearchWallpapers(query, "", categories, purity, width, height, fetchPerSource)
+				}
 			}
-			// Tier 3: Try query alone
-			if (err != nil || len(res) == 0) && query != "" {
-				res, _ = SearchWallpapers(query, "", categories, purity, width, height, fetchPerSource)
-			}
-		}
-		addResults(res)
-	}()
+			addResults(res)
+		}()
+	}
 
 	// Source 2: Reddit (with 3-tiered color-aesthetic fallback matching)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// Tier 1: Combined search (e.g. "Tokyo Night purple")
-		combinedQuery := query
-		if colorName != "" {
-			combinedQuery = fmt.Sprintf("%s %s", query, colorName)
-		}
-		res, err := SearchReddit(combinedQuery, purity, fetchPerSource)
-		if err != nil || len(res) == 0 {
-			// Tier 2: Try color-only search (e.g. "purple wallpaper")
+	if cfg.Sources.Reddit.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Tier 1: Combined search (e.g. "Tokyo Night purple")
+			combinedQuery := query
 			if colorName != "" {
-				res, err = SearchReddit(fmt.Sprintf("%s wallpaper", colorName), purity, fetchPerSource)
+				combinedQuery = fmt.Sprintf("%s %s", query, colorName)
 			}
-			// Tier 3: Try query-only search (e.g. "Tokyo Night")
-			if (err != nil || len(res) == 0) && query != "" {
-				res, _ = SearchReddit(query, purity, fetchPerSource)
+			res, err := SearchReddit(combinedQuery, purity, fetchPerSource)
+			if err != nil || len(res) == 0 {
+				// Tier 2: Try color-only search (e.g. "purple wallpaper")
+				if colorName != "" {
+					res, err = SearchReddit(fmt.Sprintf("%s wallpaper", colorName), purity, fetchPerSource)
+				}
+				// Tier 3: Try query-only search (e.g. "Tokyo Night")
+				if (err != nil || len(res) == 0) && query != "" {
+					res, _ = SearchReddit(query, purity, fetchPerSource)
+				}
 			}
-		}
-		addResults(res)
-	}()
+			addResults(res)
+		}()
+	}
 
 	// Source 3: Waifu.im (Anime API)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// Try matching tag to query or color
-		tagQuery := query
-		if tagQuery == "" {
-			tagQuery = colorName
-		}
-		res, _ := SearchWaifuIm(tagQuery, purity, fetchPerSource)
-		addResults(res)
-	}()
+	if cfg.Sources.Waifuim.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Try matching tag to query or color
+			tagQuery := query
+			if tagQuery == "" {
+				tagQuery = colorName
+			}
+			res, _ := SearchWaifuIm(tagQuery, purity, fetchPerSource)
+			addResults(res)
+		}()
+	}
 
 	// Source 4: Picsum Photos (Premium photography)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		res, _ := SearchPicsum(fetchPerSource, width, height)
-		addResults(res)
-	}()
+	if cfg.Sources.Picsum.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, _ := SearchPicsum(fetchPerSource, width, height)
+			addResults(res)
+		}()
+	}
 
 	// Source 5: NASA APOD (Cosmic space wallpapers)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		res, _ := SearchNasaApod(fetchPerSource)
-		addResults(res)
-	}()
+	if cfg.Sources.Nasa.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, _ := SearchNasaApod(fetchPerSource)
+			addResults(res)
+		}()
+	}
 
 	// Source 6: Bing Daily (Nature daily homepage feed)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		res, _ := SearchBingDaily(fetchPerSource)
-		addResults(res)
-	}()
+	if cfg.Sources.Bing.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, _ := SearchBingDaily(fetchPerSource)
+			addResults(res)
+		}()
+	}
 
 	// Source 7: Nekos.life (Desktop anime wallpapers)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		res, _ := SearchNekosLife(fetchPerSource)
-		addResults(res)
-	}()
+	if cfg.Sources.Nekos.Enabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, _ := SearchNekosLife(fetchPerSource)
+			addResults(res)
+		}()
+	}
+
+	// Source 8: Local Folders (Crawler matched by query/aesthetic)
+	if len(cfg.LocalFolders) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, _ := SearchLocalFolders(query, cfg.LocalFolders, fetchPerSource)
+			if len(res) == 0 && colorName != "" {
+				res, _ = SearchLocalFolders(colorName, cfg.LocalFolders, fetchPerSource)
+			}
+			addResults(res)
+		}()
+	}
 
 	wg.Wait()
 

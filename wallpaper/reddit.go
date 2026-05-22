@@ -45,6 +45,9 @@ func SearchReddit(query string, purity string, count int) ([]ImageData, error) {
 
 	// Restrict to these high-quality image subreddits
 	subreddits := "wallpaper+wallpapers+Cyberpunk+EarthPorn+AnimeWallpapers+unixporn"
+	if len(ActiveConfig.Sources.Reddit.Subreddits) > 0 {
+		subreddits = strings.Join(ActiveConfig.Sources.Reddit.Subreddits, "+")
+	}
 	baseURL := fmt.Sprintf("https://www.reddit.com/r/%s/search.json", subreddits)
 
 	params := url.Values{}

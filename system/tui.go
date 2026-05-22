@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -257,6 +259,178 @@ func RunTUI(results []wallpaper.ImageData, targetCount int, query, color, catego
 		case 'q', 'Q', 27, 3: // Quit / Escape / Ctrl+C
 			// Restore terminal and exit with empty download list
 			return nil
+		case 'c', 'C': // Color Aesthetic Picker
+			// Clear Kitty preview first so it doesn't get drawn over the menu
+			clearKittyPreview()
+
+			colorOptions := []struct {
+				Name  string
+				Hex   string
+				Color string // ANSI escape code for visual coloring
+			}{
+				{"Neon Red", "ff0055", "\x1b[38;5;197m"},
+				{"Neon Orange", "ff5500", "\x1b[38;5;202m"},
+				{"Neon Yellow", "ffcc00", "\x1b[38;5;220m"},
+				{"Neon Green", "00ff66", "\x1b[38;5;48m"},
+				{"Neon Blue", "00ccff", "\x1b[38;5;45m"},
+				{"Neon Purple", "9900ff", "\x1b[38;5;99m"},
+				{"Neon Pink", "ff00aa", "\x1b[38;5;201m"},
+				{"Cyan", "00ffff", "\x1b[38;5;51m"},
+				{"Teal", "008080", "\x1b[38;5;30m"},
+				{"White", "ffffff", "\x1b[38;5;231m"},
+			}
+
+			colorCursor := 0
+			for {
+				// Clear screen and draw the color picker menu
+				fmt.Print("\x1b[H\x1b[2J")
+				fmt.Print("\r\x1b[38;5;242m╔══════════════════════════════════════════════════════════════════════╗\x1b[0m\r\n")
+				fmt.Print("\r\x1b[38;5;242m║\x1b[0m                 \x1b[1;38;5;51mSELECT AESTHETICS / COLOR PALETTE\x1b[0m                    \x1b[38;5;242m║\x1b[0m\r\n")
+				fmt.Print("\r\x1b[38;5;242m╠══════════════════════════════════════════════════════════════════════╣\x1b[0m\r\n")
+				fmt.Print("\r\x1b[38;5;242m║\x1b[0m \x1b[33m[Navigation]\x1b[0m  Up/Down or j/k    \x1b[38;5;242m│\x1b[0m  \x1b[33m[Confirm]\x1b[0m   Press Enter         \x1b[38;5;242m║\x1b[0m\r\n")
+				fmt.Print("\r\x1b[38;5;242m║\x1b[0m \x1b[33m[Cancel]\x1b[0m      Press Esc or q                                    \x1b[38;5;242m║\x1b[0m\r\n")
+				fmt.Print("\r\x1b[38;5;242m╚══════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n\r\n")
+
+				for idx, opt := range colorOptions {
+					ptr := "   "
+					if idx == colorCursor {
+						ptr = "\x1b[1;38;5;201m▶▶ \x1b[0m"
+					}
+					// Draw color block
+					fmt.Printf("\r%s%s█ %-15s \x1b[0m\x1b[38;5;242m(#%s)\x1b[0m\r\n", ptr, opt.Color, opt.Name, opt.Hex)
+				}
+				fmt.Print("\r\n\x1b[38;5;242m========================================================================\x1b[0m\r\n")
+
+				// Read input
+				var pickByte byte
+				select {
+				case err := <-errChan:
+					logDebug("Stdin error in color picker: %v", err)
+					return nil
+				case pickByte = <-inputChan:
+				}
+
+				// Map Escape sequences in color picker
+				var pickKey byte
+				if pickByte == 27 {
+					select {
+					case b2 := <-inputChan:
+						if b2 == 91 || b2 == 79 {
+							var seq []byte
+							timeout := false
+							for {
+								select {
+								case db := <-inputChan:
+									seq = append(seq, db)
+									if db >= 64 && db <= 126 {
+										goto parsePickerCSI
+									}
+								case <-time.After(50 * time.Millisecond):
+									timeout = true
+									goto parsePickerCSI
+								}
+							}
+						parsePickerCSI:
+							if !timeout {
+								finalChar := seq[len(seq)-1]
+								if finalChar == 'A' || finalChar == 'k' {
+									pickKey = 'k'
+								} else if finalChar == 'B' || finalChar == 'j' {
+									pickKey = 'j'
+								}
+							} else {
+								pickKey = 27
+							}
+						} else {
+							pickKey = 27
+						}
+					case <-time.After(50 * time.Millisecond):
+						pickKey = 27
+					}
+				} else {
+					pickKey = pickByte
+				}
+
+				switch pickKey {
+				case 'k', 'K':
+					if colorCursor > 0 {
+						colorCursor--
+					} else {
+						colorCursor = len(colorOptions) - 1
+					}
+				case 'j', 'J':
+					if colorCursor < len(colorOptions)-1 {
+						colorCursor++
+					} else {
+						colorCursor = 0
+					}
+				case 13, 10: // Enter
+					// Set overridden color and trigger search/reload instantly!
+					chosenColor := colorOptions[colorCursor].Hex
+					color = chosenColor // Override color parameter
+
+					// Re-trigger fresh search concurrently, showing the loading screen
+					type refreshResult struct {
+						results []wallpaper.ImageData
+						err     error
+					}
+					resultChan := make(chan refreshResult, 1)
+
+					go func() {
+						newResults, err := wallpaper.SearchAllSources(query, chosenColor, categories, purity, width, height, 15)
+						if err == nil {
+							newResults = FilterAndPrioritizeWallpapers(newResults, wallpapersDir, 12)
+						}
+						resultChan <- refreshResult{results: newResults, err: err}
+					}()
+
+					// Fluid loading spinner animation frames
+					frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+					frameIdx := 0
+
+					for {
+						select {
+						case res := <-resultChan:
+							if res.err == nil && len(res.results) > 0 {
+								results = res.results
+								cursorIdx = 0
+								selected = make(map[int]bool)
+								selected[0] = true
+							} else {
+								errMsg := "unknown error"
+								if res.err != nil {
+									errMsg = res.err.Error()
+								}
+								fmt.Printf("\r\n\r           \x1b[1;31mError fetching wallpapers:\x1b[0m %s\r\n", errMsg)
+								time.Sleep(1500 * time.Millisecond)
+							}
+							goto endColorPicker
+						case err := <-errChan:
+							logDebug("Stdin error during color search: %v", err)
+							return nil
+						case kb := <-inputChan:
+							if kb == 'q' || kb == 'Q' || kb == 27 || kb == 3 {
+								return nil
+							}
+						default:
+							fmt.Print("\x1b[H\x1b[2J")
+							fmt.Print("\r\x1b[38;5;242m╔══════════════════════════════════════════════════════════════════════╗\x1b[0m\r\n")
+							fmt.Print("\r\x1b[38;5;242m║\x1b[0m                 \x1b[1;38;5;51mHYPRWALL-DL INTERACTIVE SELECTOR\x1b[0m                    \x1b[38;5;242m║\x1b[0m\r\n")
+							fmt.Print("\r\x1b[38;5;242m╚══════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n\r\n")
+							fmt.Printf("\r          \x1b[1;38;5;51m%s\x1b[0m \x1b[38;5;201mQuerying sources for aesthetic palette: \x1b[1;33m%s\x1b[0m\x1b[38;5;201m...\x1b[0m\r\n\r\n", frames[frameIdx], colorOptions[colorCursor].Name)
+							fmt.Print("\r\x1b[38;5;242m========================================================================\x1b[0m\r\n")
+
+							frameIdx = (frameIdx + 1) % len(frames)
+							time.Sleep(80 * time.Millisecond)
+						}
+					}
+				case 'q', 'Q', 27, 3: // Cancel / Quit back to list
+					goto endColorPicker
+				}
+			}
+		endColorPicker:
+			// Loop continues, list re-drawn.
+			_ = 0
 		case 'r', 'R': // Refresh selection with a new set of random wallpapers
 			// Clear Kitty preview first so it doesn't get drawn over the loading screen
 			clearKittyPreview()
@@ -337,7 +511,7 @@ func drawScreen(ctx context.Context, results []wallpaper.ImageData, cursorIdx in
 	fmt.Print("\r\x1b[38;5;242m╠══════════════════════════════════════════════════════════════════════╣\x1b[0m\r\n")
 	fmt.Print("\r\x1b[38;5;242m║\x1b[0m \x1b[33m[Navigation]\x1b[0m  Up/Down or j/k    \x1b[38;5;242m│\x1b[0m  \x1b[33m[Toggle]\x1b[0m   Space to select     \x1b[38;5;242m║\x1b[0m\r\n")
 	fmt.Print("\r\x1b[38;5;242m║\x1b[0m \x1b[33m[Confirm]\x1b[0m     Press Enter       \x1b[38;5;242m│\x1b[0m  \x1b[33m[Refresh]\x1b[0m  Press r to reload   \x1b[38;5;242m║\x1b[0m\r\n")
-	fmt.Print("\r\x1b[38;5;242m║\x1b[0m \x1b[33m[Exit]\x1b[0m        Press q or Esc    \x1b[38;5;242m│\x1b[0m                                 \x1b[38;5;242m║\x1b[0m\r\n")
+	fmt.Print("\r\x1b[38;5;242m║\x1b[0m \x1b[33m[Exit]\x1b[0m        Press q or Esc    \x1b[38;5;242m│\x1b[0m  \x1b[33m[Palette]\x1b[0m  Press c to pick     \x1b[38;5;242m║\x1b[0m\r\n")
 	fmt.Print("\r\x1b[38;5;242m╚══════════════════════════════════════════════════════════════════════╝\x1b[0m\r\n\r\n")
 
 	// Render selection list
@@ -360,6 +534,8 @@ func drawScreen(ctx context.Context, results []wallpaper.ImageData, cursorIdx in
 		// Branded colorful source tags
 		sourceTag := ""
 		switch res.Source {
+		case "Local":
+			sourceTag = "\x1b[38;5;214m[Local]\x1b[0m "
 		case "Reddit":
 			sourceTag = "\x1b[38;5;202m[Reddit]\x1b[0m "
 		case "Waifu.im":
@@ -414,49 +590,61 @@ func triggerPreview(ctx context.Context, imageID string, thumbURL string, numRes
 			return
 		}
 
-		client := &http.Client{Timeout: 10 * time.Second}
-		req, err := http.NewRequestWithContext(ctx, "GET", thumbURL, nil)
-		if err != nil {
-			return
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return
-		}
-		defer resp.Body.Close()
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		tmpFile := filepathJoin("/tmp", fmt.Sprintf("hyprwall_thumb_%s.jpg", imageID))
-		out, err := os.Create(tmpFile)
-		if err != nil {
-			return
-		}
-		defer out.Close()
-
-		_, err = io.Copy(out, resp.Body)
-		out.Close() // Explicitly close the file to flush completely to disk
-		if err != nil {
-			return
-		}
-
-		if ctx.Err() != nil {
-			os.Remove(tmpFile)
-			return
-		}
-
-		// Convert downloaded JPEG to PNG since the official Kitty Graphics Protocol natively supports PNG (f=100)
 		pngFile := filepathJoin("/tmp", fmt.Sprintf("hyprwall_thumb_%s.png", imageID))
-		if err := convertJpegToPng(tmpFile, pngFile); err != nil {
-			logDebug("Failed to convert JPEG to PNG: %v", err)
-			return
+		isLocal := false
+		if _, err := os.Stat(thumbURL); err == nil {
+			isLocal = true
+		}
+
+		if isLocal {
+			if err := prepareLocalPreview(thumbURL, pngFile); err != nil {
+				logDebug("Failed to prepare local preview: %v", err)
+				return
+			}
+		} else {
+			client := &http.Client{Timeout: 10 * time.Second}
+			req, err := http.NewRequestWithContext(ctx, "GET", thumbURL, nil)
+			if err != nil {
+				return
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			tmpFile := filepathJoin("/tmp", fmt.Sprintf("hyprwall_thumb_%s.jpg", imageID))
+			out, err := os.Create(tmpFile)
+			if err != nil {
+				return
+			}
+			defer out.Close()
+
+			_, err = io.Copy(out, resp.Body)
+			out.Close() // Explicitly close the file to flush completely to disk
+			if err != nil {
+				return
+			}
+
+			if ctx.Err() != nil {
+				os.Remove(tmpFile)
+				return
+			}
+
+			// Convert downloaded JPEG to PNG since the official Kitty Graphics Protocol natively supports PNG (f=100)
+			if err := convertJpegToPng(tmpFile, pngFile); err != nil {
+				logDebug("Failed to convert JPEG to PNG: %v", err)
+				return
+			}
+			os.Remove(tmpFile)
 		}
 
 		if ctx.Err() != nil {
-			os.Remove(tmpFile)
 			os.Remove(pngFile)
 			return
 		}
@@ -518,6 +706,45 @@ func convertJpegToPng(jpegPath string, pngPath string) error {
 	defer f.Close()
 
 	img, err := jpeg.Decode(f)
+	if err != nil {
+		return err
+	}
+
+	out, err := os.Create(pngPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	return png.Encode(out, img)
+}
+
+func prepareLocalPreview(srcPath, pngPath string) error {
+	ext := strings.ToLower(filepath.Ext(srcPath))
+	if ext == ".png" {
+		// Direct copy
+		in, err := os.Open(srcPath)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.Create(pngPath)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, in)
+		return err
+	}
+
+	// Decode using registered image decoders (jpeg, png, gif, etc.)
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
 	if err != nil {
 		return err
 	}

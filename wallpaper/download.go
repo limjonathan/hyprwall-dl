@@ -31,6 +31,31 @@ func DownloadImage(wall ImageData, destDir string) (string, error) {
 	filename := fmt.Sprintf("%s%s", wall.ID, ext)
 	destPath := filepath.Join(destDir, filename)
 
+	// Check if this represents a local file
+	isLocal := false
+	if _, err := os.Stat(wall.Path); err == nil {
+		isLocal = true
+	}
+
+	if isLocal {
+		in, err := os.Open(wall.Path)
+		if err != nil {
+			return "", fmt.Errorf("failed to open local source file: %w", err)
+		}
+		defer in.Close()
+
+		out, err := os.Create(destPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to create local copy target: %w", err)
+		}
+		defer out.Close()
+
+		if _, err := io.Copy(out, in); err != nil {
+			return "", fmt.Errorf("failed to copy local file: %w", err)
+		}
+		return destPath, nil
+	}
+
 	// Download the file with a 30-second client-side timeout
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(wall.Path)
